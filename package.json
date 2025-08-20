@@ -1,14 +1,6 @@
 {
-    "name": "bot-tickets",
-    "main": "main.js",
-    "author": "cuongisreal IT",
-    "version": "1.0.0",
-    "repository": "https://github.com/trchicuong/bot-tickets.git",
-    "description": "Discord bot to manage tickets on your server",
-    "scripts": {
-        "start": "node main.js"
-    },
-    "dependencies": {
-        "discord.js": "^13.2.0"
-    }
+  "dependencies": {
+    "@discordjs/rest": "^2.5.1",
+    "discord.js": "^14.21.0"
+  }
 }

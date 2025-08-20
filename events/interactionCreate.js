@@ -1,211 +1,290 @@
-const { createWriteStream } = require('fs');
-const { MessageEmbed, MessageSelectMenu, MessageActionRow, MessageButton } = require('discord.js');
+const { Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
+const { logChannelId } = require('../config.json');
 
-module.exports = async (client, int) => {
-    const req = int.customId.split('_')[0];
+const transcriptsPath = path.join(__dirname, '../transcripts.json');
 
-    client.emit('ticketsLogs', req, int.guild, int.member.user);
+function saveTranscript(ticketId, transcript) {
+    let data = {};
+    try {
+        data = JSON.parse(fs.readFileSync(transcriptsPath, 'utf8'));
+    } catch (e) {
+        data = {};
+    }
+    data[ticketId] = transcript;
+    fs.writeFileSync(transcriptsPath, JSON.stringify(data, null, 4));
+}
 
-    switch (req) {
-        case 'createTicket': {
-            const selectMenu = new MessageSelectMenu();
-
-            selectMenu.setCustomId('newTicket');
-            selectMenu.setPlaceholder('Choose a reason for the ticket');
-            selectMenu.addOptions([
-                {
-                    emoji: '🐛',
-                    label: 'None',
-                    description: 'No reason',
-                    value: 'newTicket'
-                },
-                {
-                    emoji: '🦙',
-                    label: 'Support',
-                    description: 'Ask for help',
-                    value: 'newTicket_Support'
-                },
-                {
-                    emoji: '🐎',
-                    label: 'Moderation',
-                    description: 'Talking with the team',
-                    value: 'newTicket_Moderation'
-                },
-            ]);
-
-            const row = new MessageActionRow().addComponents(selectMenu);
-
-            return int.reply({ content: 'What will be the reason for the ticket ?', components: [row], ephemeral: true });
+module.exports = {
+    name: Events.InteractionCreate,
+    async execute(interaction) {
+        if (interaction.isCommand()) {
+            return;
         }
 
-        case 'newTicket': {
-            const reason = int.values[0].split('_')[1];
+        const { channel, customId, user, client, guild } = interaction;
 
-            const channel = int.guild.channels.cache.find(x => x.name === `ticket-${int.member.id}`);
+        if (customId === 'create_ticket') {
+            const existingTicket = guild.channels.cache.find(c =>
+                c.topic?.includes(`ID: ${user.id}`)
+            );
 
-            if (!channel) {
-                await int.guild.channels.create(`ticket-${int.member.id}`, {
-                    type: 'GUILD_TEXT',
-                    topic: `Ticket created by ${int.member.user.username}${reason ? ` (${reason})` : ''} ${new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}`,
+            if (existingTicket) {
+                return interaction.reply({ content: `Bạn đã có một ticket đang mở tại ${existingTicket}!`, ephemeral: true });
+            }
+
+            const selectMenu = new StringSelectMenuBuilder()
+                .setCustomId('select_topic')
+                .setPlaceholder('Chọn một chủ đề...')
+                .addOptions(
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel('Hỗ trợ chung')
+                        .setDescription('Yêu cầu hỗ trợ về các vấn đề chung.')
+                        .setValue('hỗ trợ chung'),
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel('Góp ý/Đề xuất')
+                        .setDescription('Đóng góp ý kiến hoặc đề xuất tính năng mới.')
+                        .setValue('góp ý/đề xuất'),
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel('Báo cáo lỗi')
+                        .setDescription('Báo cáo lỗi hoặc vấn đề kỹ thuật.')
+                        .setValue('báo cáo lỗi'),
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel('Khác')
+                        .setDescription('Chọn tùy chọn này nếu không có chủ đề phù hợp.')
+                        .setValue('khác')
+                );
+
+            const row = new ActionRowBuilder().addComponents(selectMenu);
+
+            await interaction.reply({
+                content: 'Vui lòng chọn một chủ đề cho ticket của bạn:',
+                components: [row],
+                ephemeral: true,
+            });
+            return;
+        }
+        
+        if (customId === 'select_topic') {
+            const selectedTopic = interaction.values[0];
+
+            if (selectedTopic === 'khác') {
+                const modal = new ModalBuilder()
+                    .setCustomId('custom_topic_modal')
+                    .setTitle('Nhập chủ đề tùy chỉnh');
+                
+                const topicInput = new TextInputBuilder()
+                    .setCustomId('custom_topic_input')
+                    .setLabel('Chủ đề')
+                    .setStyle(TextInputStyle.Short)
+                    .setMinLength(1)
+                    .setMaxLength(50)
+                    .setRequired(true);
+
+                const firstActionRow = new ActionRowBuilder().addComponents(topicInput);
+                modal.addComponents(firstActionRow);
+
+                await interaction.showModal(modal);
+                return;
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            try {
+                const now = new Date();
+                const ticketTopic = `Tạo bởi: ${user.tag} - Chủ đề: ${selectedTopic} - ID: ${user.id}`;
+                const ticketChannel = await guild.channels.create({
+                    name: `ticket-${user.username}-${now.getTime()}`,
+                    type: ChannelType.GuildText,
+                    topic: ticketTopic,
                     permissionOverwrites: [
                         {
-                            id: int.guild.id,
-                            deny: ['VIEW_CHANNEL', 'SEND_MESSAGES']
+                            id: guild.id,
+                            deny: [PermissionFlagsBits.ViewChannel],
                         },
                         {
-                            id: int.member.id,
-                            allow: ['VIEW_CHANNEL', 'SEND_MESSAGES']
+                            id: user.id,
+                            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
                         },
                         {
                             id: client.user.id,
-                            allow: ['VIEW_CHANNEL', 'SEND_MESSAGES']
+                            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
                         }
-                    ]
+                    ],
                 });
 
-                const channel = int.guild.channels.cache.find(x => x.name === `ticket-${int.member.id}`);
+                await ticketChannel.setPosition(0);
 
-                const ticketEmbed = new MessageEmbed();
+                const ticketEmbed = new EmbedBuilder()
+                    .setColor('#2ecc71')
+                    .setTitle('🎫 Ticket Hỗ Trợ Mới')
+                    .setDescription(`Chào mừng <@${user.id}>, bạn đã tạo ticket thành công! Đội ngũ hỗ trợ sẽ có mặt sớm nhất có thể.\n\n**Chủ đề**: ${selectedTopic}`)
+                    .setTimestamp()
+                    .setFooter({ text: `Hệ thống Ticket | ID người dùng: ${user.id}` });
+                
+                const closeButton = new ButtonBuilder()
+                    .setCustomId('close_ticket')
+                    .setLabel('Đóng Ticket')
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji('🔒');
 
-                ticketEmbed.setColor('GREEN');
-                ticketEmbed.setAuthor(`Your ticket has been successfully created ${int.member.user.username}${reason ? ` (${reason})` : ''} ✅`);
-                ticketEmbed.setDescription('*To close the current ticket click on the reaction below, warning it is impossible to go back !*');
+                const row = new ActionRowBuilder().addComponents(closeButton);
 
-                const closeButton = new MessageButton();
+                await ticketChannel.send({ content: `<@${user.id}>`, embeds: [ticketEmbed], components: [row] });
 
-                closeButton.setStyle('DANGER');
-                closeButton.setLabel('Close this ticket');
-                closeButton.setCustomId(`closeTicket_${int.member.id}`);
+                return interaction.editReply({ content: `Ticket của bạn đã được tạo tại ${ticketChannel} với chủ đề: **${selectedTopic}**!`, ephemeral: true });
 
-                const row = new MessageActionRow().addComponents(closeButton);
+            } catch (error) {
+                console.error(error);
+                return interaction.editReply({ content: 'Có lỗi xảy ra khi tạo ticket. Vui lòng kiểm tra quyền của bot.', ephemeral: true });
+            }
+        }
+        
+        if (interaction.isModalSubmit() && interaction.customId === 'custom_topic_modal') {
+            await interaction.deferReply({ ephemeral: true });
+            const customTopic = interaction.fields.getTextInputValue('custom_topic_input');
+            
+            try {
+                const now = new Date();
+                const ticketTopic = `Tạo bởi: ${user.tag} - Chủ đề: ${customTopic} - ID: ${user.id}`;
+                const ticketChannel = await guild.channels.create({
+                    name: `ticket-${user.username}-${now.getTime()}`,
+                    type: ChannelType.GuildText,
+                    topic: ticketTopic,
+                    permissionOverwrites: [
+                        {
+                            id: guild.id,
+                            deny: [PermissionFlagsBits.ViewChannel],
+                        },
+                        {
+                            id: user.id,
+                            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
+                        },
+                        {
+                            id: client.user.id,
+                            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
+                        }
+                    ],
+                });
+                
+                await ticketChannel.setPosition(0);
+                
+                const ticketEmbed = new EmbedBuilder()
+                    .setColor('#2ecc71')
+                    .setTitle('🎫 Ticket Hỗ Trợ Mới')
+                    .setDescription(`Chào mừng <@${user.id}>, bạn đã tạo ticket thành công! Đội ngũ hỗ trợ sẽ có mặt sớm nhất có thể.\n\n**Chủ đề**: ${customTopic}`)
+                    .setTimestamp()
+                    .setFooter({ text: `Hệ thống Ticket | ID người dùng: ${user.id}` });
 
-                await channel.send({ embeds: [ticketEmbed], components: [row] });
+                const closeButton = new ButtonBuilder()
+                    .setCustomId('close_ticket')
+                    .setLabel('Đóng Ticket')
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji('🔒');
 
-                return int.update({ content: `Your ticket is open <@${int.member.id}> <#${channel.id}> ✅`, components: [], ephemeral: true });
-            } else {
-                return int.update({ content: `You already have an open ticket <#${channel.id}> ❌`, components: [], ephemeral: true });
+                const row = new ActionRowBuilder().addComponents(closeButton);
+
+                await ticketChannel.send({ content: `<@${user.id}>`, embeds: [ticketEmbed], components: [row] });
+                
+                return interaction.editReply({ content: `Ticket của bạn đã được tạo tại ${ticketChannel} với chủ đề: **${customTopic}**!`, ephemeral: true });
+
+            } catch (error) {
+                console.error(error);
+                return interaction.editReply({ content: 'Có lỗi xảy ra khi tạo ticket. Vui lòng kiểm tra quyền của bot.', ephemeral: true });
             }
         }
 
-        case 'closeTicket': {
-            const channel = int.guild.channels.cache.get(int.channelId);
+        if (interaction.isButton()) {
+            if (customId === 'close_ticket') {
+                if (!interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+                    return interaction.reply({ content: 'Bạn không có quyền để đóng ticket này.', ephemeral: true });
+                }
 
-            await channel.edit({
-                permissionOverwrites: [
-                    {
-                        id: int.guild.id,
-                        deny: ['VIEW_CHANNEL', 'SEND_MESSAGES']
-                    },
-                    {
-                        id: int.customId.split('_')[1],
-                        deny: ['VIEW_CHANNEL', 'SEND_MESSAGES']
-                    },
-                    {
-                        id: client.user.id,
-                        allow: ['VIEW_CHANNEL', 'SEND_MESSAGES']
+                const confirmEmbed = new EmbedBuilder()
+                    .setColor('#e74c3c')
+                    .setTitle('⚠️ Xác nhận Đóng Ticket')
+                    .setDescription('Hành động này sẽ đóng và lưu lại bản ghi của ticket. Bạn có chắc chắn muốn tiếp tục không?');
+
+                const confirmButton = new ButtonBuilder()
+                    .setCustomId('confirm_close')
+                    .setLabel('Xác nhận Đóng')
+                    .setStyle(ButtonStyle.Success);
+
+                const cancelButton = new ButtonBuilder()
+                    .setCustomId('cancel_close')
+                    .setLabel('Hủy')
+                    .setStyle(ButtonStyle.Secondary);
+
+                const row = new ActionRowBuilder().addComponents(confirmButton, cancelButton);
+
+                await interaction.reply({ embeds: [confirmEmbed], components: [row], ephemeral: true });
+            }
+            
+            if (customId === 'confirm_close') {
+                await interaction.deferReply({ ephemeral: true });
+
+                const messages = await channel.messages.fetch({ limit: 100 });
+                const userIdMatch = channel.topic?.match(/ID: (\d+)/);
+                const userId = userIdMatch ? userIdMatch[1] : channel.topic;
+                const userTag = guild.members.cache.get(userId)?.user.tag || 'Không tìm thấy người dùng';
+                
+                const topicMatch = channel.topic?.match(/Chủ đề: (.+) - ID:/);
+                const ticketTopic = topicMatch ? topicMatch[1] : 'Không rõ';
+
+                const creationTime = new Date(messages.last()?.createdTimestamp).toLocaleString('vi-VN');
+                const closeTime = new Date().toLocaleString('vi-VN');
+
+                let transcriptHeader = 
+                    `--- Transcript Ticket ---\n` +
+                    `ID Ticket: #${channel.name}\n` +
+                    `Chủ đề: ${ticketTopic}\n` +
+                    `Người tạo: ${userTag}\n` +
+                    `Thời gian tạo: ${creationTime}\n` +
+                    `Thời gian đóng: ${closeTime}\n` +
+                    `Người đóng: ${user.tag}\n` +
+                    `--- Lịch sử chat ---\n\n`;
+
+                const transcriptContent = messages.reverse().map(msg => 
+                    `[${new Date(msg.createdTimestamp).toLocaleString('vi-VN')}] ${msg.author.tag}: ${msg.content}`
+                ).join('\n');
+
+                const fullTranscript = transcriptHeader + transcriptContent;
+
+                const fileName = `${channel.name}.txt`;
+                const transcriptAttachment = new AttachmentBuilder(Buffer.from(fullTranscript), { name: fileName });
+
+                const logChannel = guild.channels.cache.get(logChannelId);
+
+                if (logChannel) {
+                    const logMessage = await logChannel.send({ content: `Ticket từ <@${userId}> đã được đóng.`, files: [transcriptAttachment] });
+                    const transcriptUrl = logMessage.attachments.first()?.url;
+                    if (transcriptUrl) {
+                        saveTranscript(channel.name.replace('ticket-reopen-', '').replace('ticket-', ''), {
+                            user: userId,
+                            url: transcriptUrl,
+                            timestamp: Date.now()
+                        });
                     }
-                ]
-            });
+                }
 
-            const ticketEmbed = new MessageEmbed();
+                const closeEmbed = new EmbedBuilder()
+                    .setColor('#e74c3c')
+                    .setTitle('🔒 Ticket Đã Đóng')
+                    .setDescription(`Ticket này đã được đóng bởi <@${user.id}>. Kênh sẽ tự động xóa sau 3 giây.`)
+                    .setTimestamp()
+                    .setFooter({ text: `Hệ thống Ticket | ID ticket: #${channel.name}` });
 
-            ticketEmbed.setColor('RED');
-            ticketEmbed.setAuthor(`${int.member.user.username} has decided to close this ticket ❌`);
-            ticketEmbed.setDescription('*To permanently delete the ticket or to reopen the ticket click on the button below.*');
+                await channel.send({ embeds: [closeEmbed] });
 
-            const reopenButton = new MessageButton();
+                setTimeout(() => {
+                    channel.delete().catch(console.error);
+                }, 3000); // Đã đổi thời gian thành 3 giây
+            }
 
-            reopenButton.setStyle('SUCCESS');
-            reopenButton.setLabel('Reopen this ticket');
-            reopenButton.setCustomId(`reopenTicket_${int.customId.split('_')[1]}`);
-
-            const saveButton = new MessageButton();
-
-            saveButton.setStyle('SUCCESS');
-            saveButton.setLabel('Save this ticket');
-            saveButton.setCustomId(`saveTicket_${int.customId.split('_')[1]}`);
-
-            const deleteButton = new MessageButton();
-
-            deleteButton.setStyle('DANGER');
-            deleteButton.setLabel('Delete this ticket');
-            deleteButton.setCustomId('deleteTicket');
-
-            const row = new MessageActionRow().addComponents(reopenButton, saveButton, deleteButton);
-
-            return int.reply({ embeds: [ticketEmbed], components: [row] });
+            if (customId === 'cancel_close') {
+                await interaction.reply({ content: 'Đã hủy đóng ticket.', ephemeral: true });
+            }
         }
-
-        case 'reopenTicket': {
-            const channel = int.guild.channels.cache.get(int.channelId);
-
-            await channel.edit({
-                permissionOverwrites: [
-                    {
-                        id: int.guild.id,
-                        deny: ['VIEW_CHANNEL', 'SEND_MESSAGES']
-                    },
-                    {
-                        id: int.customId.split('_')[1],
-                        allow: ['VIEW_CHANNEL', 'SEND_MESSAGES']
-                    },
-                    {
-                        id: client.user.id,
-                        allow: ['VIEW_CHANNEL', 'SEND_MESSAGES']
-                    }
-                ]
-            });
-
-            const ticketEmbed = new MessageEmbed();
-
-            ticketEmbed.setColor('GREEN');
-            ticketEmbed.setAuthor(`The ticket has been reopened ✅`);
-            ticketEmbed.setDescription('*To close the current ticket click on the reaction below, warning it is impossible to go back !*');
-
-            const closeButton = new MessageButton();
-
-            closeButton.setStyle('DANGER');
-            closeButton.setLabel('Close this ticket');
-            closeButton.setCustomId(`closeTicket_${int.customId.split('_')[1]}`);
-
-            const row = new MessageActionRow().addComponents(closeButton);
-
-            return int.reply({ embeds: [ticketEmbed], components: [row] });
-        }
-
-        case 'deleteTicket': {
-            const channel = int.guild.channels.cache.get(int.channelId);
-
-            return channel.delete();
-        }
-
-        case 'saveTicket': {
-            const channel = int.guild.channels.cache.get(int.channelId);
-
-            await channel.messages.fetch().then(async msg => {
-                let messages = msg
-                    .filter(msg => msg.author.bot !== true)
-                    .map(m => {
-                        const date = new Date(m.createdTimestamp).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-                        const user = `${m.author.tag}${m.author.id === int.customId.split('_')[1] ? ' (ticket creator)' : ''}`;
-        
-                        return `${date} - ${user} : ${m.attachments.size > 0 ? m.attachments.first().proxyURL : m.content}`;
-                    }).reverse().join('\n');
-        
-                if (messages.length < 1) messages = 'There are no messages in this ticket... strange';
-        
-                const ticketID = Date.now();
-        
-                const stream = await createWriteStream(`./data/${ticketID}.txt`);
-        
-                stream.once('open', () => {
-                    stream.write(`User ticket ${int.customId.split('_')[1]} (channel #${channel.name})\n\n`);
-                    stream.write(`${messages}\n\nLogs ${new Date(ticketID).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}`);
-                    stream.end();
-                });
-        
-                stream.on('finish', () => int.reply({ files: [`./data/${ticketID}.txt`] }));
-            });
-        }
-    }
+    },
 };

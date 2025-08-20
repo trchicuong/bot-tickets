@@ -1,0 +1,6 @@
+{
+  "token": "your-bot-token-here",
+  "clientId": "your-client-id-here",
+  "guildId": "your-guild-id-here",
+  "logChannelId": "your-log-channel-id-here"
+}
